@@ -11,13 +11,7 @@ from web_app.models import Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
-from web_app.config import get_settings
-
 config = context.config
-settings = get_settings()
-
-# Set SQLAlchemy URL from environment variables
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

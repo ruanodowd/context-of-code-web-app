@@ -9,119 +9,203 @@
 </head>
 <body class="bg-gray-100">
     <div class="container mx-auto px-4 py-8">
-        <h1 class="text-3xl font-bold mb-8">Metrics Dashboard</h1>
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold">Metrics Dashboard</h1>
+            <button id="addMetricBtn" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                Add New Metric
+            </button>
+        </div>
         
         <!-- Metrics Grid -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-            {% for metric_name, data in grouped_metrics.items() %}
+        <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-8">
+            {% for metric_type in metric_types %}
+            {% set history = metric_history[metric_type.id] %}
+            {% if history %}
             <div class="bg-white rounded-lg shadow p-6">
                 <div class="flex justify-between items-start mb-4">
                     <div>
-                        <h2 class="text-xl font-semibold">{{ metric_name }}</h2>
-                        <p class="text-3xl font-bold text-blue-600 mt-2">
-                            {{ "%.2f"|format(data.current.value) }} {{ data.current.unit }}
-                        </p>
-                        <p class="text-sm text-gray-500 mt-1">
-                            Last updated: {{ data.current.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}
-                        </p>
+                        <h2 class="text-xl font-semibold">{{ metric_type.name }}</h2>
+                        {% if metric_type.description %}
+                        <p class="text-sm text-gray-600 mt-1">{{ metric_type.description }}</p>
+                        {% endif %}
                     </div>
+                    {% if metric_type.unit %}
+                    <span class="text-sm font-medium bg-blue-100 text-blue-800 px-2 py-1 rounded">{{ metric_type.unit }}</span>
+                    {% endif %}
                 </div>
-                
-                <!-- Metric Graph -->
-                <div class="mt-4 h-64">
-                    <canvas id="chart-{{ metric_name|replace(' ', '-') }}"></canvas>
+
+                {% set latest = history[0] %}
+                <div class="mb-4">
+                    <div class="flex justify-between items-baseline">
+                        <p class="text-gray-600">Latest Value</p>
+                        <p class="text-sm text-gray-500">{{ latest.recorded_at }}</p>
+                    </div>
+                    <div class="flex items-baseline space-x-2">
+                        <p class="text-3xl font-bold text-blue-600">{{ "%.2f"|format(latest.value) }}</p>
+                        {% if latest.source %}
+                        <p class="text-sm text-gray-500">from {{ latest.source }}</p>
+                        {% endif %}
+                    </div>
+                    {% if latest.metric_metadata %}
+                    <div class="mt-2 text-sm text-gray-600">
+                        <details>
+                            <summary class="cursor-pointer hover:text-blue-600">Additional Info</summary>
+                            <pre class="mt-2 text-xs bg-gray-50 p-2 rounded overflow-auto">{{ latest.metric_metadata | tojson(indent=2) }}</pre>
+                        </details>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <div class="h-64">
+                    <canvas id="chart-{{ metric_type.id }}"></canvas>
                 </div>
             </div>
+            {% endif %}
             {% endfor %}
         </div>
 
-        <!-- Add Metric Form -->
-        <div class="bg-white rounded-lg shadow p-6">
-            <h2 class="text-xl font-semibold mb-4">Add New Metric</h2>
-            <form id="metricForm" class="space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700">Metric Name</label>
-                    <input type="text" name="name" required
-                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+        <!-- Add Metric Modal -->
+        <div id="metricModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full">
+            <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+                <div class="mt-3">
+                    <h3 class="text-lg font-medium leading-6 text-gray-900 mb-4">Add New Metric</h3>
+                    <form id="metricForm" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Metric Type</label>
+                            <select name="metric_type_id" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                                <option value="">Select a metric type...</option>
+                                {% for mt in metric_types %}
+                                <option value="{{ mt.id }}">{{ mt.name }} {% if mt.unit %}({{ mt.unit }}){% endif %}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Value</label>
+                            <input type="number" name="value" step="0.01" required
+                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Source (Optional)</label>
+                            <input type="text" name="source"
+                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Metadata (Optional)</label>
+                            <textarea name="metadata" rows="3"
+                                      class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                                      placeholder='{"key": "value"}'></textarea>
+                        </div>
+                        <div class="flex justify-end space-x-3">
+                            <button type="button" id="closeModal"
+                                    class="bg-gray-200 text-gray-800 px-4 py-2 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-300 focus:ring-offset-2">
+                                Cancel
+                            </button>
+                            <button type="submit"
+                                    class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                                Add Metric
+                            </button>
+                        </div>
+                    </form>
                 </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700">Value</label>
-                    <input type="number" name="value" step="0.01" required
-                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700">Unit</label>
-                    <input type="text" name="unit" required
-                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
-                </div>
-                <button type="submit"
-                        class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
-                    Add Metric
-                </button>
-            </form>
+            </div>
         </div>
     </div>
 
     <script>
-        // Initialize charts for each metric
-        {% for metric_name, data in grouped_metrics.items() %}
-        new Chart(document.getElementById('chart-{{ metric_name|replace(' ', '-') }}'), {
+        // Initialize charts
+        {% for metric_type in metric_types %}
+        {% set history = metric_history[metric_type.id] %}
+        {% if history %}
+        new Chart(document.getElementById('chart-{{ metric_type.id }}'), {
             type: 'line',
             data: {
-                labels: [
-                    {% for metric in data.history %}
-                        '{{ metric.timestamp.strftime('%H:%M:%S') }}',
-                    {% endfor %}
-                ],
+                labels: {{ history | map(attribute='recorded_at') | list | tojson }}.map(date => new Date(date).toLocaleTimeString()),
                 datasets: [{
-                    label: '{{ metric_name }}',
-                    data: [
-                        {% for metric in data.history %}
-                            {{ metric.value }},
-                        {% endfor %}
-                    ],
+                    label: '{{ metric_type.name }}',
+                    data: {{ history | map(attribute='value') | list | tojson }},
                     borderColor: 'rgb(59, 130, 246)',
-                    tension: 0.1,
-                    fill: false
+                    tension: 0.1
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: false
-                    }
-                },
                 scales: {
                     y: {
                         beginAtZero: false,
-                        ticks: {
-                            callback: function(value) {
-                                return value + ' {{ data.current.unit }}';
+                        title: {
+                            display: true,
+                            text: '{{ metric_type.unit }}'
+                        }
+                    },
+                    x: {
+                        reverse: true  // Show newest data on the right
+                    }
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            afterLabel: function(context) {
+                                const metric = {{ history | tojson }}[context.dataIndex];
+                                let lines = [];
+                                if (metric.source) {
+                                    lines.push(`Source: ${metric.source}`);
+                                }
+                                if (metric.metric_metadata) {
+                                    lines.push(`Metadata: ${JSON.stringify(metric.metric_metadata)}`);
+                                }
+                                return lines;
                             }
                         }
                     }
                 }
             }
         });
+        {% endif %}
         {% endfor %}
 
-        // Form submission handler
+        // Modal handling
+        const modal = document.getElementById('metricModal');
+        const addMetricBtn = document.getElementById('addMetricBtn');
+        const closeModal = document.getElementById('closeModal');
+
+        addMetricBtn.onclick = () => modal.classList.remove('hidden');
+        closeModal.onclick = () => modal.classList.add('hidden');
+
+        // Close modal when clicking outside
+        modal.onclick = (e) => {
+            if (e.target === modal) {
+                modal.classList.add('hidden');
+            }
+        };
+
+        // Handle form submission
         document.getElementById('metricForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
             const data = {
-                name: formData.get('name'),
+                metric_type_id: parseInt(formData.get('metric_type_id')),
                 value: parseFloat(formData.get('value')),
-                unit: formData.get('unit')
+                source: formData.get('source') || null
             };
+
+            // Parse metadata if provided
+            const metadataStr = formData.get('metadata');
+            if (metadataStr) {
+                try {
+                    data.metric_metadata = JSON.parse(metadataStr);
+                } catch (error) {
+                    alert('Invalid JSON in metadata field');
+                    return;
+                }
+            }
 
             try {
                 const response = await fetch('/api/metrics/', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
+                        'X-API-Key': '{{ settings.API_KEY }}'
                     },
                     body: JSON.stringify(data)
                 });
@@ -129,7 +213,8 @@
                 if (response.ok) {
                     window.location.reload();
                 } else {
-                    alert('Error adding metric');
+                    const error = await response.json();
+                    alert(`Error: ${error.detail || 'Failed to add metric'}`);
                 }
             } catch (error) {
                 console.error('Error:', error);
@@ -137,7 +222,7 @@
             }
         });
 
-        // Auto-refresh the page every 30 seconds to get new data
+        // Auto-refresh every 30 seconds
         setTimeout(() => window.location.reload(), 30000);
     </script>
 </body>

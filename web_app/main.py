@@ -11,8 +11,11 @@ from typing import List
 import uvicorn
 
 from .database import get_db
-from .models import Metric
-from .schemas import MetricCreate, MetricBulkCreate, Metric as MetricSchema
+from .models import Metric, MetricType
+from .schemas import (
+    MetricCreate, MetricBulkCreate, Metric as MetricSchema,
+    MetricType as MetricTypeSchema, MetricTypeCreate
+)
 from .config import get_settings
 
 settings = get_settings()
@@ -27,7 +30,7 @@ app = FastAPI(
 # Setup CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,8 +50,35 @@ async def get_api_key(api_key: str = Security(api_key_header)):
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="web_app/static"), name="static")
 
-# Setup Jinja2 templates
+# Setup Jinja2 templates with datetime filter
 templates = Jinja2Templates(directory="web_app/templates")
+
+# Add custom filters to Jinja2 environment
+def format_datetime(value, format='%Y-%m-%d %H:%M:%S'):
+    if value is None:
+        return ''
+    return value.strftime(format)
+
+templates.env.filters['strftime'] = format_datetime
+
+@app.post("/api/metric-types/", response_model=MetricTypeSchema)
+async def create_metric_type(
+    metric_type: MetricTypeCreate,
+    db: AsyncSession = Depends(get_db),
+    api_key: str = Security(get_api_key)
+):
+    """Create a new metric type definition."""
+    db_metric_type = MetricType(**metric_type.model_dump())
+    db.add(db_metric_type)
+    await db.commit()
+    await db.refresh(db_metric_type)
+    return db_metric_type
+
+@app.get("/api/metric-types/", response_model=List[MetricTypeSchema])
+async def list_metric_types(db: AsyncSession = Depends(get_db)):
+    """List all available metric types."""
+    result = await db.execute(select(MetricType))
+    return result.scalars().all()
 
 @app.post("/api/metrics/", response_model=MetricSchema)
 async def create_metric(
@@ -56,16 +86,27 @@ async def create_metric(
     db: AsyncSession = Depends(get_db),
     api_key: str = Security(get_api_key)
 ):
-    """
-    Create a new metric entry.
-    This endpoint allows adding a single metric to the system.
-    The timestamp can be specified or will default to current UTC time.
-    """
-    db_metric = Metric.from_schema(metric)
+    """Create a new metric measurement."""
+    # Verify metric type exists
+    result = await db.execute(
+        select(MetricType).where(MetricType.id == metric.metric_type_id)
+    )
+    metric_type = result.scalar_one_or_none()
+    if not metric_type:
+        raise HTTPException(status_code=404, detail="Metric type not found")
+
+    # Create the metric
+    db_metric = Metric(**metric.model_dump())
     db.add(db_metric)
     await db.commit()
-    await db.refresh(db_metric)
-    return db_metric
+    
+    # Refresh with metric_type relationship loaded
+    result = await db.execute(
+        select(Metric)
+        .options(selectinload(Metric.metric_type))
+        .where(Metric.id == db_metric.id)
+    )
+    return result.scalar_one()
 
 @app.post("/api/metrics/bulk", response_model=List[MetricSchema])
 async def create_metrics_bulk(
@@ -73,29 +114,21 @@ async def create_metrics_bulk(
     db: AsyncSession = Depends(get_db),
     api_key: str = Security(get_api_key)
 ):
-    """
-    Bulk create multiple metric entries.
-    This endpoint allows adding multiple metrics in a single request.
-    Each metric can have its own timestamp or use the current UTC time as default.
+    """Bulk create multiple metric measurements."""
+    # Verify all metric types exist
+    metric_type_ids = {m.metric_type_id for m in metrics.metrics}
+    result = await db.execute(
+        select(MetricType).where(MetricType.id.in_(metric_type_ids))
+    )
+    found_types = {mt.id for mt in result.scalars().all()}
+    missing_types = metric_type_ids - found_types
+    if missing_types:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Metric types not found: {missing_types}"
+        )
 
-    Example request body:
-    {
-        "metrics": [
-            {
-                "name": "cpu_usage",
-                "value": 45.2,
-                "unit": "%",
-                "timestamp": "2025-02-19T12:30:00Z"
-            },
-            {
-                "name": "memory_usage",
-                "value": 1024.5,
-                "unit": "MB"
-            }
-        ]
-    }
-    """
-    db_metrics = [Metric.from_schema(m) for m in metrics.metrics]
+    db_metrics = [Metric(**m.model_dump()) for m in metrics.metrics]
     db.add_all(db_metrics)
     await db.commit()
     
@@ -136,33 +169,50 @@ async def get_metric_by_name(metric_name: str, db: AsyncSession = Depends(get_db
 async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     """
     Main dashboard view.
-    Renders the dashboard template with grouped metrics data and their history.
+    Renders the dashboard template with metric types and their history.
     """
-    # Get all metrics grouped by name
+    # Get all metric types
     result = await db.execute(
-        select(Metric.name).distinct()
+        select(MetricType)
+        .order_by(MetricType.name)
     )
-    metric_names = result.scalars().all()
+    metric_types = result.scalars().all()
 
-    grouped_metrics = {}
-    for name in metric_names:
-        # Get historical data for each metric
+    # Get historical data for each metric type
+    metric_history = {}
+    for metric_type in metric_types:
         result = await db.execute(
             select(Metric)
-            .filter(Metric.name == name)
-            .order_by(Metric.timestamp.desc())
-            .limit(20)  # Last 20 data points for the graph
+            .options(selectinload(Metric.metric_type))
+            .filter(Metric.metric_type_id == metric_type.id)
+            .order_by(Metric.recorded_at.desc())
+            .limit(50)  # Limit to last 50 measurements for performance
         )
         metrics = result.scalars().all()
         if metrics:
-            grouped_metrics[name] = {
-                'current': metrics[0],  # Latest value
-                'history': list(reversed(metrics))  # Historical data in chronological order
-            }
+            # Convert SQLAlchemy models to dictionaries for JSON serialization
+            # Convert metrics to a serializable format
+            serialized_metrics = []
+            for metric in metrics:
+                metric_dict = {
+                    'id': metric.id,
+                    'value': metric.value,
+                    'recorded_at': metric.recorded_at.isoformat() if metric.recorded_at else None,
+                    'source': metric.source,
+                    'metric_metadata': metric.metric_metadata,
+                    'metric_type_id': metric.metric_type_id
+                }
+                serialized_metrics.append(metric_dict)
+            metric_history[metric_type.id] = serialized_metrics
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "grouped_metrics": grouped_metrics}
+        {
+            "request": request,
+            "metric_types": metric_types,
+            "metric_history": metric_history,
+            "settings": settings
+        }
     )
 
 if __name__ == "__main__":
