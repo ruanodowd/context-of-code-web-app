@@ -1,6 +1,8 @@
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException, Request, Security
+from fastapi.security.api_key import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -10,13 +12,37 @@ import uvicorn
 
 from .database import get_db
 from .models import Metric
-from .schemas import MetricCreate, Metric as MetricSchema
+from .schemas import MetricCreate, MetricBulkCreate, Metric as MetricSchema
+from .config import get_settings
+
+settings = get_settings()
 
 app = FastAPI(
     title="Metrics Dashboard",
     description="A modern FastAPI dashboard for tracking various metrics",
-    version="1.0.0"
+    version="1.0.0",
+    debug=settings.DEBUG
 )
+
+# Setup CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# API Key security
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+async def get_api_key(api_key: str = Security(api_key_header)):
+    if api_key != settings.API_KEY:
+        raise HTTPException(
+            status_code=403,
+            detail="Could not validate API key"
+        )
+    return api_key
 
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="web_app/static"), name="static")
@@ -25,20 +51,59 @@ app.mount("/static", StaticFiles(directory="web_app/static"), name="static")
 templates = Jinja2Templates(directory="web_app/templates")
 
 @app.post("/api/metrics/", response_model=MetricSchema)
-async def create_metric(metric: MetricCreate, db: AsyncSession = Depends(get_db)):
+async def create_metric(
+    metric: MetricCreate,
+    db: AsyncSession = Depends(get_db),
+    api_key: str = Security(get_api_key)
+):
     """
     Create a new metric entry.
-    This endpoint allows adding new metrics to the system.
+    This endpoint allows adding a single metric to the system.
+    The timestamp can be specified or will default to current UTC time.
     """
-    db_metric = Metric(
-        name=metric.name,
-        value=metric.value,
-        unit=metric.unit
-    )
+    db_metric = Metric.from_schema(metric)
     db.add(db_metric)
     await db.commit()
     await db.refresh(db_metric)
     return db_metric
+
+@app.post("/api/metrics/bulk", response_model=List[MetricSchema])
+async def create_metrics_bulk(
+    metrics: MetricBulkCreate,
+    db: AsyncSession = Depends(get_db),
+    api_key: str = Security(get_api_key)
+):
+    """
+    Bulk create multiple metric entries.
+    This endpoint allows adding multiple metrics in a single request.
+    Each metric can have its own timestamp or use the current UTC time as default.
+
+    Example request body:
+    {
+        "metrics": [
+            {
+                "name": "cpu_usage",
+                "value": 45.2,
+                "unit": "%",
+                "timestamp": "2025-02-19T12:30:00Z"
+            },
+            {
+                "name": "memory_usage",
+                "value": 1024.5,
+                "unit": "MB"
+            }
+        ]
+    }
+    """
+    db_metrics = [Metric.from_schema(m) for m in metrics.metrics]
+    db.add_all(db_metrics)
+    await db.commit()
+    
+    # Refresh all metrics to get their IDs
+    for metric in db_metrics:
+        await db.refresh(metric)
+    
+    return db_metrics
 
 @app.get("/api/metrics/", response_model=List[MetricSchema])
 async def get_metrics(db: AsyncSession = Depends(get_db)):

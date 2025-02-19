@@ -12,7 +12,7 @@ class Metric(Base):
     - name: The identifier of the metric (e.g., 'cpu_usage', 'memory_usage')
     - value: The numerical value of the metric
     - unit: The unit of measurement (e.g., '%', 'MB', 'requests/sec')
-    - timestamp: When the metric was recorded
+    - timestamp: When the metric was recorded (UTC)
     """
     __tablename__ = "metrics"
 
@@ -20,7 +20,17 @@ class Metric(Base):
     name = Column(String, index=True)
     value = Column(Float)
     unit = Column(String)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    @classmethod
+    def from_schema(cls, metric_data):
+        """Create a Metric instance from a Pydantic schema."""
+        return cls(
+            name=metric_data.name,
+            value=metric_data.value,
+            unit=metric_data.unit,
+            timestamp=metric_data.timestamp or datetime.utcnow()
+        )
 
     def to_dict(self):
         """Convert the model instance to a dictionary for API responses."""
