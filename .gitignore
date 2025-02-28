@@ -29,6 +29,7 @@ poetry.lock
 env/
 venv/
 ENV/
+.gitignore
 
 # Database
 *.db
