@@ -55,3 +55,4 @@ coverage.xml
 .hypothesis/
 .env.example
 .gitignore
+.env.example
