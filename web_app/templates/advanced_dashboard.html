@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Metrics Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tabulator-tables@5.4.4/dist/js/tabulator.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tabulator-tables@5.4.4/dist/css/tabulator.min.css" rel="stylesheet">
+    <style>
+        .tabulator {
+            font-size: 14px;
+            border-radius: 0.5rem;
+            overflow: hidden;
+        }
+        .tabulator-header {
+            background-color: #f3f4f6;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .tabulator-row {
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .tabulator-row.tabulator-row-even {
+            background-color: #f9fafb;
+        }
+        .tabulator-row:hover {
+            background-color: #f3f4f6;
+        }
+        .gauge-container {
+            width: 100%;
+            height: 250px;
+            position: relative;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold">Advanced Metrics Dashboard</h1>
+            <div class="space-x-4">
+                <a href="/" class="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2">
+                    Standard Dashboard
+                </a>
+                <button id="addMetricBtn" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                    Add New Metric
+                </button>
+            </div>
+        </div>
+        
+        <!-- CPU Usage Gauge -->
+        <div class="bg-white rounded-lg shadow p-6 mb-8">
+            <h2 class="text-xl font-semibold mb-4">CPU Usage</h2>
+            <div class="gauge-container">
+                <canvas id="cpuGauge"></canvas>
+            </div>
+            <div class="text-center mt-4">
+                <span id="cpuValue" class="text-2xl font-bold text-blue-600">0%</span>
+                <p class="text-sm text-gray-500" id="cpuTimestamp">Last updated: N/A</p>
+            </div>
+        </div>
+        
+        <!-- Metrics Filter Controls -->
+        <div class="bg-white rounded-lg shadow p-6 mb-8">
+            <h2 class="text-xl font-semibold mb-4">Filter Metrics</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <label for="metricTypeFilter" class="block text-sm font-medium text-gray-700 mb-1">Metric Type</label>
+                    <select id="metricTypeFilter" class="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                        <option value="">All Types</option>
+                        {% for metric_type in metric_types %}
+                        <option value="{{ metric_type.id }}">{{ metric_type.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label for="sourceFilter" class="block text-sm font-medium text-gray-700 mb-1">Source</label>
+                    <input type="text" id="sourceFilter" placeholder="Filter by source" class="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label for="dateRangeFilter" class="block text-sm font-medium text-gray-700 mb-1">Date Range</label>
+                    <select id="dateRangeFilter" class="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                        <option value="all">All Time</option>
+                        <option value="today">Today</option>
+                        <option value="yesterday">Yesterday</option>
+                        <option value="week">Last 7 Days</option>
+                        <option value="month">Last 30 Days</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Metrics Table -->
+        <div class="bg-white rounded-lg shadow p-6">
+            <h2 class="text-xl font-semibold mb-4">All Metrics Data</h2>
+            <div id="metricsTable"></div>
+        </div>
+        
+        <!-- Metric Modal (same as in the original dashboard) -->
+        <div id="metricModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full">
+            <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+                <div class="mt-3">
+                    <h3 class="text-lg font-medium leading-6 text-gray-900 mb-4">Add New Metric</h3>
+                    <form id="metricForm" class="space-y-4">
+                        <div>
+                            <label for="metricType" class="block text-sm font-medium text-gray-700">Metric Type</label>
+                            <select id="metricType" name="metric_type_id" required class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">
+                                <option value="">Select a metric type</option>
+                                {% for metric_type in metric_types %}
+                                <option value="{{ metric_type.id }}">{{ metric_type.name }} {% if metric_type.unit %}({{ metric_type.unit }}){% endif %}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div>
+                            <label for="metricValue" class="block text-sm font-medium text-gray-700">Value</label>
+                            <input type="number" step="any" id="metricValue" name="value" required class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+                        </div>
+                        <div>
+                            <label for="metricSource" class="block text-sm font-medium text-gray-700">Source (Optional)</label>
+                            <input type="text" id="metricSource" name="source" class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+                        </div>
+                        <div>
+                            <label for="metricMetadata" class="block text-sm font-medium text-gray-700">Metadata (Optional JSON)</label>
+                            <textarea id="metricMetadata" name="metric_metadata" rows="3" class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"></textarea>
+                        </div>
+                        <div class="flex justify-end space-x-3">
+                            <button type="button" id="cancelBtn" class="bg-gray-200 text-gray-800 px-4 py-2 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2">
+                                Cancel
+                            </button>
+                            <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                                Submit
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Variables for CPU usage
+        let cpuGaugeChart;
+        let cpuMetricTypeId = null;
+        let cpuLatestValue = 0;
+        let cpuTimestamp = 'N/A';
+        
+        // Find the CPU usage metric type ID and value
+        {% for metric_type in metric_types %}
+            {% if 'cpu' in metric_type.name.lower() %}
+                cpuMetricTypeId = {{ metric_type.id }};
+                {% if metric_type.id in metric_history %}
+                    {% set latest = metric_history[metric_type.id][0] %}
+                    cpuLatestValue = {{ latest.value }};
+                    cpuTimestamp = "{{ latest.recorded_at }}";
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize the CPU gauge using Chart.js
+            initializeCpuGauge();
+            
+            // Initialize the metrics table
+            initializeMetricsTable();
+            
+            // Set up filter event listeners
+            document.getElementById('metricTypeFilter').addEventListener('change', filterTable);
+            document.getElementById('sourceFilter').addEventListener('input', filterTable);
+            document.getElementById('dateRangeFilter').addEventListener('change', filterTable);
+            
+            // Modal controls
+            document.getElementById('addMetricBtn').addEventListener('click', function() {
+                document.getElementById('metricModal').classList.remove('hidden');
+            });
+            
+            document.getElementById('cancelBtn').addEventListener('click', function() {
+                document.getElementById('metricModal').classList.add('hidden');
+            });
+            
+            // Close modal when clicking outside
+            document.getElementById('metricModal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.add('hidden');
+                }
+            });
+            
+            // Handle form submission
+            document.getElementById('metricForm').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                
+                // Parse metadata if provided
+                let metadataValue = formData.get('metric_metadata');
+                let metadataJson = null;
+                
+                if (metadataValue) {
+                    try {
+                        metadataJson = JSON.parse(metadataValue);
+                    } catch (error) {
+                        alert('Invalid JSON in metadata field');
+                        return;
+                    }
+                }
+                
+                // Prepare the request body
+                const body = {
+                    metric_type_id: parseInt(formData.get('metric_type_id')),
+                    value: parseFloat(formData.get('value')),
+                    source: formData.get('source') || null,
+                    metric_metadata: metadataJson
+                };
+                
+                try {
+                    const response = await fetch('/api/metrics', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-API-Key': '{{ settings.API_KEY }}'
+                        },
+                        body: JSON.stringify(body)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Failed to add metric');
+                    }
+                    
+                    // Reset form and close modal
+                    e.target.reset();
+                    document.getElementById('metricModal').classList.add('hidden');
+                    
+                    // Refresh the page to show the new metric
+                    window.location.reload();
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert('Failed to add metric: ' + error.message);
+                }
+            });
+        });
+        
+        // Function to initialize CPU gauge with Chart.js
+        function initializeCpuGauge() {
+            const ctx = document.getElementById('cpuGauge').getContext('2d');
+            
+            // Update CPU value display
+            document.getElementById('cpuValue').textContent = cpuLatestValue.toFixed(2) + '%';
+            document.getElementById('cpuTimestamp').textContent = 'Last updated: ' + cpuTimestamp;
+            
+            // Create gauge chart
+            cpuGaugeChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    datasets: [{
+                        data: [cpuLatestValue, 100 - cpuLatestValue],
+                        backgroundColor: [
+                            getColorForValue(cpuLatestValue),
+                            '#f3f4f6'
+                        ],
+                        borderWidth: 0,
+                        circumference: 180,
+                        rotation: 270
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '75%',
+                    plugins: {
+                        tooltip: {
+                            enabled: false
+                        },
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Function to get color based on CPU value
+        function getColorForValue(value) {
+            if (value < 40) {
+                return '#10B981'; // Green
+            } else if (value < 80) {
+                return '#FBBF24'; // Yellow
+            } else {
+                return '#EF4444'; // Red
+            }
+        }
+        
+        // Function to initialize the metrics table
+        function initializeMetricsTable() {
+            // Prepare data for the table
+            const tableData = [];
+            
+            {% for metric_type in metric_types %}
+                {% if metric_type.id in metric_history %}
+                    {% for metric in metric_history[metric_type.id] %}
+                        tableData.push({
+                            id: {{ metric.id }},
+                            metric_type_id: {{ metric_type.id }},
+                            metric_name: "{{ metric_type.name }}",
+                            value: {{ metric.value }},
+                            unit: "{{ metric_type.unit or '' }}",
+                            recorded_at: "{{ metric.recorded_at }}",
+                            source: "{{ metric.source or '' }}",
+                            metadata: {{ metric.metric_metadata or {} | tojson }}
+                        });
+                    {% endfor %}
+                {% endif %}
+            {% endfor %}
+            
+            // Initialize Tabulator
+            const table = new Tabulator("#metricsTable", {
+                data: tableData,
+                layout: "fitColumns",
+                pagination: "local",
+                paginationSize: 15,
+                paginationSizeSelector: [10, 15, 20, 50, 100],
+                columns: [
+                    {title: "ID", field: "id", sorter: "number", width: 70},
+                    {title: "Metric", field: "metric_name", sorter: "string"},
+                    {title: "Value", field: "value", sorter: "number", formatter: function(cell) {
+                        const value = cell.getValue();
+                        const unit = cell.getRow().getData().unit;
+                        return value.toFixed(2) + (unit ? ` ${unit}` : '');
+                    }},
+                    {title: "Recorded At", field: "recorded_at", sorter: "datetime"},
+                    {title: "Source", field: "source", sorter: "string"},
+                    {title: "Metadata", field: "metadata", formatter: function(cell) {
+                        const metadata = cell.getValue();
+                        if (metadata && Object.keys(metadata).length > 0) {
+                            return "<span class='cursor-pointer text-blue-600 hover:underline' data-metadata='" + 
+                                   JSON.stringify(metadata).replace(/'/g, "&#39;") + 
+                                   "'>View</span>";
+                        }
+                        return "";
+                    }, cellClick: function(e, cell) {
+                        const metadata = cell.getData().metadata;
+                        if (metadata && Object.keys(metadata).length > 0) {
+                            alert(JSON.stringify(metadata, null, 2));
+                        }
+                    }}
+                ]
+            });
+        }
+        
+        // Function to filter the table based on user selections
+        function filterTable() {
+            const metricTypeId = document.getElementById('metricTypeFilter').value;
+            const source = document.getElementById('sourceFilter').value.toLowerCase();
+            const dateRange = document.getElementById('dateRangeFilter').value;
+            
+            const table = Tabulator.findTable("#metricsTable")[0];
+            
+            table.setFilter(function(data) {
+                // Filter by metric type
+                if (metricTypeId && data.metric_type_id != metricTypeId) {
+                    return false;
+                }
+                
+                // Filter by source
+                if (source && (!data.source || !data.source.toLowerCase().includes(source))) {
+                    return false;
+                }
+                
+                // Filter by date range
+                if (dateRange !== 'all') {
+                    const recordedDate = new Date(data.recorded_at);
+                    const now = new Date();
+                    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                    const yesterday = new Date(today);
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    
+                    if (dateRange === 'today' && recordedDate < today) {
+                        return false;
+                    } else if (dateRange === 'yesterday' && (recordedDate < yesterday || recordedDate >= today)) {
+                        return false;
+                    } else if (dateRange === 'week') {
+                        const weekAgo = new Date(now);
+                        weekAgo.setDate(weekAgo.getDate() - 7);
+                        if (recordedDate < weekAgo) {
+                            return false;
+                        }
+                    } else if (dateRange === 'month') {
+                        const monthAgo = new Date(now);
+                        monthAgo.setDate(monthAgo.getDate() - 30);
+                        if (recordedDate < monthAgo) {
+                            return false;
+                        }
+                    }
+                }
+                
+                return true;
+            });
+        }
+    </script>
+</body>
+</html>

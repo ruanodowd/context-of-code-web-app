@@ -215,5 +215,54 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         }
     )
 
+@app.get("/advanced")
+async def advanced_dashboard(request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Advanced dashboard view with speedometer gauge and filterable table.
+    Renders the advanced_dashboard template with metric types and their history.
+    """
+    # Get all metric types
+    result = await db.execute(
+        select(MetricType)
+        .order_by(MetricType.name)
+    )
+    metric_types = result.scalars().all()
+
+    # Get historical data for each metric type
+    metric_history = {}
+    for metric_type in metric_types:
+        result = await db.execute(
+            select(Metric)
+            .options(selectinload(Metric.metric_type))
+            .filter(Metric.metric_type_id == metric_type.id)
+            .order_by(Metric.recorded_at.desc())
+            .limit(100)  # Increased limit for the advanced dashboard
+        )
+        metrics = result.scalars().all()
+        if metrics:
+            # Convert metrics to a serializable format
+            serialized_metrics = []
+            for metric in metrics:
+                metric_dict = {
+                    'id': metric.id,
+                    'value': metric.value,
+                    'recorded_at': metric.recorded_at.isoformat() if metric.recorded_at else None,
+                    'source': metric.source,
+                    'metric_metadata': metric.metric_metadata,
+                    'metric_type_id': metric.metric_type_id
+                }
+                serialized_metrics.append(metric_dict)
+            metric_history[metric_type.id] = serialized_metrics
+
+    return templates.TemplateResponse(
+        "advanced_dashboard.html",
+        {
+            "request": request,
+            "metric_types": metric_types,
+            "metric_history": metric_history,
+            "settings": settings
+        }
+    )
+
 if __name__ == "__main__":
     uvicorn.run("web_app.main:app", host="0.0.0.0", port=8000, reload=True)
