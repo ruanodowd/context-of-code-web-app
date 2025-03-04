@@ -51,11 +51,11 @@
                         <p class="text-sm text-gray-500">from {{ latest.source }}</p>
                         {% endif %}
                     </div>
-                    {% if latest.metric_metadata %}
+                    {% if latest.metadata and latest.metadata|length > 0 %}
                     <div class="mt-2 text-sm text-gray-600">
                         <details>
                             <summary class="cursor-pointer hover:text-blue-600">Additional Info</summary>
-                            <pre class="mt-2 text-xs bg-gray-50 p-2 rounded overflow-auto">{{ latest.metric_metadata | tojson(indent=2) }}</pre>
+                            <pre class="mt-2 text-xs bg-gray-50 p-2 rounded overflow-auto">{{ latest.metadata | tojson(indent=2) }}</pre>
                         </details>
                     </div>
                     {% endif %}
@@ -156,8 +156,8 @@
                                 if (metric.source) {
                                     lines.push(`Source: ${metric.source}`);
                                 }
-                                if (metric.metric_metadata) {
-                                    lines.push(`Metadata: ${JSON.stringify(metric.metric_metadata)}`);
+                                if (metric.metadata && Object.keys(metric.metadata).length > 0) {
+                                    lines.push(`Metadata: ${JSON.stringify(metric.metadata)}`);
                                 }
                                 return lines;
                             }
@@ -189,16 +189,20 @@
             e.preventDefault();
             const formData = new FormData(e.target);
             const data = {
-                metric_type_id: parseInt(formData.get('metric_type_id')),
+                metric_type_id: formData.get('metric_type_id'),
                 value: parseFloat(formData.get('value')),
-                source: formData.get('source') || null
+                source_id: null
             };
 
             // Parse metadata if provided
             const metadataStr = formData.get('metadata');
             if (metadataStr) {
                 try {
-                    data.metric_metadata = JSON.parse(metadataStr);
+                    const parsedMetadata = JSON.parse(metadataStr);
+                    data.metadata = [];
+                    for (const [key, value] of Object.entries(parsedMetadata)) {
+                        data.metadata.push({ key, value: String(value) });
+                    }
                 } catch (error) {
                     alert('Invalid JSON in metadata field');
                     return;

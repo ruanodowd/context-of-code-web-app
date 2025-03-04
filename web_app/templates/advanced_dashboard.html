@@ -121,7 +121,7 @@
                         </div>
                         <div>
                             <label for="metricMetadata" class="block text-sm font-medium text-gray-700">Metadata (Optional JSON)</label>
-                            <textarea id="metricMetadata" name="metric_metadata" rows="3" class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"></textarea>
+                            <textarea id="metricMetadata" name="metadata" rows="3" class="mt-1 focus:ring-blue-500 focus:border-blue-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" placeholder='{"key1": "value1", "key2": "value2"}'></textarea>
                         </div>
                         <div class="flex justify-end space-x-3">
                             <button type="button" id="cancelBtn" class="bg-gray-200 text-gray-800 px-4 py-2 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2">
@@ -296,14 +296,15 @@
                 {% if metric_type.id in metric_history %}
                     {% for metric in metric_history[metric_type.id] %}
                         tableData.push({
-                            id: {{ metric.id }},
-                            metric_type_id: {{ metric_type.id }},
+                            id: "{{ metric.id }}",
+                            metric_type_id: "{{ metric_type.id }}",
                             metric_name: "{{ metric_type.name }}",
                             value: {{ metric.value }},
                             unit: "{{ metric_type.unit or '' }}",
                             recorded_at: "{{ metric.recorded_at }}",
                             source: "{{ metric.source or '' }}",
-                            metadata: {{ metric.metric_metadata or {} | tojson }}
+                            source_id: "{{ metric.source_id or '' }}",
+                            metadata: {{ metric.metadata or {} | tojson }}
                         });
                     {% endfor %}
                 {% endif %}
