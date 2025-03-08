@@ -17,6 +17,7 @@ from .schemas import (
     MetricType as MetricTypeSchema, MetricTypeCreate
 )
 from .config import get_settings
+from .command_relay import router as command_relay_router
 
 settings = get_settings()
 
@@ -50,6 +51,9 @@ async def get_api_key(api_key: str = Security(api_key_header)):
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="web_app/static"), name="static")
 
+# Include command relay router
+app.include_router(command_relay_router)
+
 # Setup Jinja2 templates with datetime filter
 templates = Jinja2Templates(directory="web_app/templates")
 
@@ -60,6 +64,21 @@ def format_datetime(value, format='%Y-%m-%d %H:%M:%S'):
     return value.strftime(format)
 
 templates.env.filters['strftime'] = format_datetime
+
+# Helper function to serialize metric types
+def serialize_metric_types(metric_types):
+    """Convert metric types to JSON-serializable dictionaries"""
+    return [
+        {
+            'id': str(mt.id),
+            'name': mt.name,
+            'description': mt.description,
+            'unit': mt.unit,
+            'created_at': mt.created_at.isoformat() if mt.created_at else None,
+            'is_active': mt.is_active
+        }
+        for mt in metric_types
+    ]
 
 @app.post("/api/metric-types/", response_model=MetricTypeSchema)
 async def create_metric_type(
@@ -183,7 +202,11 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     for metric_type in metric_types:
         result = await db.execute(
             select(Metric)
-            .options(selectinload(Metric.metric_type))
+            .options(
+                selectinload(Metric.metric_type),
+                selectinload(Metric.source),
+                selectinload(Metric.metric_metadata_items)
+            )
             .filter(Metric.metric_type_id == metric_type.id)
             .order_by(Metric.recorded_at.desc())
             .limit(50)  # Limit to last 50 measurements for performance
@@ -194,22 +217,33 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
             # Convert metrics to a serializable format
             serialized_metrics = []
             for metric in metrics:
+                # Safely handle source and metadata
+                source_data = {
+                    'id': str(metric.source.id) if metric.source else None,
+                    'name': metric.source.name if metric.source else None
+                } if metric.source else None
+                
+                metadata_items = [{
+                    'key': item.key,
+                    'value': item.value
+                } for item in metric.metric_metadata_items] if metric.metric_metadata_items else []
+                
                 metric_dict = {
-                    'id': metric.id,
+                    'id': str(metric.id),  # Convert UUID to string
                     'value': metric.value,
                     'recorded_at': metric.recorded_at.isoformat() if metric.recorded_at else None,
-                    'source': metric.source,
-                    'metric_metadata': metric.metric_metadata,
-                    'metric_type_id': metric.metric_type_id
+                    'source': source_data,
+                    'metric_metadata': metadata_items,
+                    'metric_type_id': str(metric.metric_type_id)  # Convert UUID to string
                 }
                 serialized_metrics.append(metric_dict)
-            metric_history[metric_type.id] = serialized_metrics
+            metric_history[str(metric_type.id)] = serialized_metrics
 
     return templates.TemplateResponse(
         "dashboard.html",
         {
             "request": request,
-            "metric_types": metric_types,
+            "metric_types": serialize_metric_types(metric_types),
             "metric_history": metric_history,
             "settings": settings
         }
@@ -233,7 +267,11 @@ async def advanced_dashboard(request: Request, db: AsyncSession = Depends(get_db
     for metric_type in metric_types:
         result = await db.execute(
             select(Metric)
-            .options(selectinload(Metric.metric_type))
+            .options(
+                selectinload(Metric.metric_type),
+                selectinload(Metric.source),
+                selectinload(Metric.metric_metadata_items)
+            )
             .filter(Metric.metric_type_id == metric_type.id)
             .order_by(Metric.recorded_at.desc())
             .limit(100)  # Increased limit for the advanced dashboard
@@ -243,23 +281,49 @@ async def advanced_dashboard(request: Request, db: AsyncSession = Depends(get_db
             # Convert metrics to a serializable format
             serialized_metrics = []
             for metric in metrics:
+                # Safely handle source and metadata
+                source_data = {
+                    'id': str(metric.source.id) if metric.source else None,
+                    'name': metric.source.name if metric.source else None
+                } if metric.source else None
+                
+                metadata_items = [{
+                    'key': item.key,
+                    'value': item.value
+                } for item in metric.metric_metadata_items] if metric.metric_metadata_items else []
+                
                 metric_dict = {
-                    'id': metric.id,
+                    'id': str(metric.id),  # Convert UUID to string
                     'value': metric.value,
                     'recorded_at': metric.recorded_at.isoformat() if metric.recorded_at else None,
-                    'source': metric.source,
-                    'metric_metadata': metric.metric_metadata,
-                    'metric_type_id': metric.metric_type_id
+                    'source': source_data,
+                    'metric_metadata': metadata_items,
+                    'metric_type_id': str(metric.metric_type_id)  # Convert UUID to string
                 }
                 serialized_metrics.append(metric_dict)
-            metric_history[metric_type.id] = serialized_metrics
+            metric_history[str(metric_type.id)] = serialized_metrics
 
     return templates.TemplateResponse(
         "advanced_dashboard.html",
         {
             "request": request,
-            "metric_types": metric_types,
+            "metric_types": serialize_metric_types(metric_types),
             "metric_history": metric_history,
+            "settings": settings
+        }
+    )
+
+# Command relay dashboard route
+@app.get("/command-relay")
+async def command_relay_dashboard(request: Request):
+    """
+    Command relay dashboard view.
+    Renders the command relay dashboard template.
+    """
+    return templates.TemplateResponse(
+        "command_relay.html",
+        {
+            "request": request,
             "settings": settings
         }
     )

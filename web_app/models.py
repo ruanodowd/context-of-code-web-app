@@ -9,6 +9,34 @@ from typing import Optional
 
 Base = declarative_base()
 
+class Unit(Base):
+    """Model for storing measurement units.
+    
+    This model defines the units that can be used for metrics:
+    - id: UUID primary key for security
+    - name: Name of the unit (e.g., 'Percentage', 'Megabytes')
+    - symbol: Symbol or abbreviation (e.g., '%', 'MB')
+    - description: Optional description of the unit
+    - created_at: When this unit was defined
+    """
+    __tablename__ = "units"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    name = Column(String(255), unique=True, nullable=False)
+    symbol = Column(String(50), unique=True, nullable=False)
+    description = Column(Text)
+    created_at = Column(DateTime, default=func.now())
+
+    # Relationship
+    metric_types = relationship("MetricType", back_populates="unit")
+
+    @validates('name', 'symbol')
+    def validate_fields(self, key, value):
+        if not value or len(value.strip()) == 0:
+            raise ValueError(f"Unit {key} cannot be empty")
+        return value.strip()
+
+
 class MetricType(Base):
     """Model for storing metric type definitions.
     
@@ -16,7 +44,7 @@ class MetricType(Base):
     - id: UUID primary key for security
     - name: Unique identifier for the metric type (e.g., 'cpu_usage', 'memory_usage')
     - description: Detailed description of what this metric represents
-    - unit: The unit of measurement (e.g., '%', 'MB', 'requests/sec')
+    - unit_id: Foreign key reference to the unit of measurement
     - created_at: When this metric type was defined
     - is_active: Whether this metric type is currently active
     """
@@ -25,11 +53,12 @@ class MetricType(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     name = Column(String(255), unique=True, nullable=False)
     description = Column(Text)
-    unit = Column(String(50))
+    unit_id = Column(UUID(as_uuid=True), ForeignKey("units.id"), nullable=False)
     created_at = Column(DateTime, default=func.now())
     is_active = Column(Boolean, default=True)
 
-    # Relationship
+    # Relationships
+    unit = relationship("Unit", back_populates="metric_types")
     metrics = relationship("Metric", back_populates="metric_type", cascade="all, delete")
     
     @validates('name')

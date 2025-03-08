@@ -1,5 +1,4 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 from functools import lru_cache
 
@@ -25,7 +24,7 @@ def get_session_factory():
     """
     Create and cache session factory.
     """
-    return sessionmaker(
+    return async_sessionmaker(
         get_engine(),
         class_=AsyncSession,
         expire_on_commit=False
