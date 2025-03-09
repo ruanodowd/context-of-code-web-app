@@ -466,6 +466,72 @@ async def advanced_dashboard(request: Request, db: AsyncSession = Depends(get_db
         }
     )
 
+# Current dashboard route
+@app.get("/current")
+async def current_dashboard(request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Current dashboard view with time-relative line graphs and command controls.
+    Renders the current_dashboard template with metric types and their history.
+    """
+    # Get all metric types with their units
+    result = await db.execute(
+        select(MetricType)
+        .options(selectinload(MetricType.unit))
+        .order_by(MetricType.name)
+    )
+    metric_types = result.scalars().all()
+
+    # Get historical data for each metric type
+    metric_history = {}
+    for metric_type in metric_types:
+        result = await db.execute(
+            select(Metric)
+            .options(
+                selectinload(Metric.metric_type),
+                selectinload(Metric.source),
+                selectinload(Metric.metric_metadata_items)
+            )
+            .filter(Metric.metric_type_id == metric_type.id)
+            .order_by(Metric.recorded_at.desc())
+            .limit(100)  # Only get the last 100 metrics for performance
+        )
+        metrics = result.scalars().all()
+        if metrics:
+            # Convert metrics to a serializable format
+            serialized_metrics = []
+            for metric in metrics:
+                # Safely handle source and metadata
+                source_data = {
+                    'id': str(metric.source.id) if metric.source else None,
+                    'name': metric.source.name if metric.source else None
+                } if metric.source else None
+                
+                metadata_items = [{
+                    'key': item.key,
+                    'value': item.value
+                } for item in metric.metric_metadata_items] if metric.metric_metadata_items else []
+                
+                metric_dict = {
+                    'id': str(metric.id),
+                    'value': metric.value,
+                    'recorded_at': metric.recorded_at.isoformat() if metric.recorded_at else None,
+                    'source': source_data,
+                    'metric_metadata': metadata_items,
+                    'metric_type_id': str(metric.metric_type_id)
+                }
+                serialized_metrics.append(metric_dict)
+            metric_history[str(metric_type.id)] = serialized_metrics
+
+    return templates.TemplateResponse(
+        "current_dashboard.html",
+        {
+            "request": request,
+            "metric_types": serialize_metric_types(metric_types),
+            "metric_history": metric_history,
+            "settings": settings
+        }
+    )
+
 # Command relay dashboard route
 @app.get("/command-relay")
 async def command_relay_dashboard(request: Request):

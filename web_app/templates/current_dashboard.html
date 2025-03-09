@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Current Metrics Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/moment.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1"></script>
+    <style>
+        .metric-thumbnail {
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+        }
+        .metric-thumbnail:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        .metric-thumbnail.active {
+            border-color: #3b82f6;
+            border-width: 2px;
+        }
+
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-6">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-3xl font-bold">Current Metrics Dashboard</h1>
+            <div class="flex space-x-4">
+                <a href="/" class="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700">
+                    Standard Dashboard
+                </a>
+                <a href="/advanced" class="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700">
+                    Advanced Dashboard
+                </a>
+                <a href="/command-relay" class="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700">
+                    Command Relay
+                </a>
+            </div>
+        </div>
+
+
+
+        <div class="flex flex-wrap">
+            <!-- Main chart view (left side) -->
+            <div class="w-full lg:w-3/4 pr-0 lg:pr-4 mb-6 lg:mb-0">
+                <div class="bg-white rounded-lg shadow p-6 h-full">
+                    <div id="mainChartHeader" class="flex justify-between items-center mb-4">
+                        <h2 id="selectedMetricTitle" class="text-xl font-semibold">Select a metric</h2>
+                        <div class="flex items-center">
+                            <div id="metricInfo" class="text-sm text-gray-600 mr-4"></div>
+                            <button id="resetZoomBtn" class="bg-gray-300 text-gray-800 px-3 py-1 rounded-md hover:bg-gray-400 focus:outline-none focus:ring-2">
+                                Reset Zoom
+                            </button>
+                        </div>
+                    </div>
+                    <div class="h-96">
+                        <canvas id="mainChart"></canvas>
+                    </div>
+                    <div id="mainChartFooter" class="mt-4 text-sm text-gray-600">
+                        <p>Drag to zoom in on a specific time range. Use mouse wheel to zoom in/out.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Metric thumbnails (right sidebar) -->
+            <div class="w-full lg:w-1/4">
+                <div class="bg-white rounded-lg shadow p-4 max-h-screen overflow-y-auto">
+                    <h2 class="text-lg font-semibold mb-4">Available Metrics</h2>
+                    <div id="metricThumbnails" class="space-y-4">
+                        {% for metric_type in metric_types %}
+                        {% set history = metric_history[metric_type.id] %}
+                        {% if history %}
+                        <div class="metric-thumbnail p-3 border border-gray-200 rounded-lg hover:bg-gray-50" 
+                             data-metric-id="{{ metric_type.id }}">
+                            <div class="flex justify-between items-start">
+                                <h3 class="font-medium text-gray-800">{{ metric_type.name }}</h3>
+                                {% if metric_type.unit %}
+                                <span class="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
+                                    {{ metric_type.unit.symbol }}
+                                </span>
+                                {% endif %}
+                            </div>
+                            {% set latest = history[0] %}
+                            <div class="flex items-baseline mt-1">
+                                <p class="text-xl font-bold text-blue-600">{{ "%.2f"|format(latest.value) }}</p>
+                                {% if latest.source %}
+                                <p class="ml-2 text-xs text-gray-500">{{ latest.source.name }}</p>
+                                {% endif %}
+                            </div>
+                            <div class="h-16 mt-2">
+                                <canvas id="thumbnail-{{ metric_type.id }}"></canvas>
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Success/Error Notifications -->
+        <div id="notificationArea" class="fixed bottom-4 right-4 w-64"></div>
+    </div>
+
+    <script>
+        // Main chart instance
+        let mainChart = null;
+        let selectedMetricId = null;
+        
+        // Store metric data for easy access
+        const metricData = {};
+        
+        {% for metric_type in metric_types %}
+        {% set history = metric_history[metric_type.id] %}
+        {% if history %}
+        metricData["{{ metric_type.id }}"] = {
+            name: "{{ metric_type.name }}",
+            description: "{{ metric_type.description or '' }}",
+            unit: {% if metric_type.unit %}{ 
+                name: "{{ metric_type.unit.name }}", 
+                symbol: "{{ metric_type.unit.symbol }}"
+            }{% else %}null{% endif %},
+            data: {{ history | tojson }}.map(m => ({
+                x: new Date(m.recorded_at).getTime(), // Convert to timestamp for time-based x-axis
+                y: m.value,
+                source: m.source,
+                metadata: m.metric_metadata || {}
+            })).sort((a, b) => a.x - b.x) // Ensure data is ordered by time
+        };
+        {% endif %}
+        {% endfor %}
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize all thumbnail charts
+            initializeThumbnails();
+            
+            // Set up event listeners
+            setupEventListeners();
+            
+            // If we have metrics, select the first one
+            const metricIds = Object.keys(metricData);
+            if (metricIds.length > 0) {
+                selectMetric(metricIds[0]);
+            }
+        });
+        
+        function initializeThumbnails() {
+            // For each metric, initialize a small thumbnail chart
+            Object.keys(metricData).forEach(metricId => {
+                const canvas = document.getElementById(`thumbnail-${metricId}`);
+                if (!canvas) return;
+                
+                const ctx = canvas.getContext('2d');
+                const data = metricData[metricId].data;
+                
+                // If we have more than 100 points, only use the most recent 100
+                const displayData = data.slice(-100);
+                
+                new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        datasets: [{
+                            label: metricData[metricId].name,
+                            data: displayData,
+                            borderColor: 'rgb(59, 130, 246)',
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            tension: 0.1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            tooltip: {
+                                enabled: false
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'time',
+                                display: false,
+                                distribution: 'linear',
+                                time: {
+                                    minUnit: 'second'
+                                }
+                            },
+                            y: {
+                                display: false,
+                                beginAtZero: false
+                            }
+                        },
+                        interaction: {
+                            mode: 'nearest',
+                            intersect: false
+                        },
+                        animation: false
+                    }
+                });
+            });
+        }
+        
+        function createMainChart(metricId) {
+            // If there's an existing chart, destroy it
+            if (mainChart) {
+                mainChart.destroy();
+            }
+            
+            const metric = metricData[metricId];
+            if (!metric) return;
+            
+            // Get last 100 data points for initial view
+            const displayData = metric.data.slice(-100);
+            
+            // Update header information
+            document.getElementById('selectedMetricTitle').textContent = metric.name;
+            document.getElementById('metricInfo').textContent = metric.description || '';
+            
+            // Create main chart
+            const ctx = document.getElementById('mainChart').getContext('2d');
+            mainChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: metric.name,
+                        data: displayData,
+                        borderColor: 'rgb(59, 130, 246)',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        pointHoverRadius: 5,
+                        fill: true,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        zoom: {
+                            zoom: {
+                                wheel: {
+                                    enabled: true
+                                },
+                                pinch: {
+                                    enabled: true
+                                },
+                                drag: {
+                                    enabled: true,
+                                    backgroundColor: 'rgba(59, 130, 246, 0.2)'
+                                },
+                                mode: 'x'
+                            },
+                            pan: {
+                                enabled: true,
+                                mode: 'x'
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                afterLabel: function(context) {
+                                    const dataPoint = displayData[context.dataIndex];
+                                    let lines = [];
+                                    if (dataPoint.source) {
+                                        lines.push(`Source: ${dataPoint.source.name || 'Unknown'}`);
+                                    }
+                                    if (dataPoint.metadata && Object.keys(dataPoint.metadata).length > 0) {
+                                        for (const [key, value] of Object.entries(dataPoint.metadata)) {
+                                            lines.push(`${key}: ${value}`);
+                                        }
+                                    }
+                                    return lines;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'minute',
+                                displayFormats: {
+                                    minute: 'HH:mm:ss',
+                                    hour: 'HH:mm',
+                                    day: 'MMM D'
+                                },
+                                tooltipFormat: 'YYYY-MM-DD HH:mm:ss'
+                            },
+                            title: {
+                                display: true,
+                                text: 'Time'
+                            },
+                            adapters: {
+                                date: {
+                                    // Time gaps will be proportional
+                                    locale: 'en'
+                                }
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: metric.unit ? `${metric.unit.name} (${metric.unit.symbol})` : 'Value'
+                            },
+                            beginAtZero: false
+                        }
+                    },
+                    interaction: {
+                        mode: 'nearest',
+                        intersect: false
+                    }
+                }
+            });
+        }
+        
+        function selectMetric(metricId) {
+            // Update selected metric
+            selectedMetricId = metricId;
+            
+            // Update active state in thumbnails
+            const thumbnails = document.querySelectorAll('.metric-thumbnail');
+            thumbnails.forEach(thumbnail => {
+                if (thumbnail.dataset.metricId === metricId) {
+                    thumbnail.classList.add('active');
+                } else {
+                    thumbnail.classList.remove('active');
+                }
+            });
+            
+            // Create or update main chart
+            createMainChart(metricId);
+        }
+        
+        function setupEventListeners() {
+            // Reset zoom button
+            document.getElementById('resetZoomBtn').addEventListener('click', function() {
+                if (mainChart) {
+                    mainChart.resetZoom();
+                }
+            });
+            
+            // Metric thumbnail click
+            const thumbnails = document.querySelectorAll('.metric-thumbnail');
+            thumbnails.forEach(thumbnail => {
+                thumbnail.addEventListener('click', function() {
+                    const metricId = this.dataset.metricId;
+                    selectMetric(metricId);
+                });
+            });
+        }
+        
+
+        
+        function showNotification(message, type = 'info') {
+            const notificationArea = document.getElementById('notificationArea');
+            const notification = document.createElement('div');
+            
+            notification.className = `p-3 mb-2 rounded-md ${
+                type === 'success' ? 'bg-green-500 text-white' :
+                type === 'error' ? 'bg-red-500 text-white' :
+                'bg-blue-500 text-white'
+            }`;
+            notification.textContent = message;
+            
+            notificationArea.appendChild(notification);
+            
+            // Remove after 5 seconds
+            setTimeout(() => {
+                notification.classList.add('opacity-0');
+                notification.style.transition = 'opacity 0.5s';
+                setTimeout(() => {
+                    notificationArea.removeChild(notification);
+                }, 500);
+            }, 5000);
+        }
+    </script>
+</body>
+</html>
