@@ -4,17 +4,18 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
-from datetime import datetime, timedelta
 from typing import List
 import uvicorn
 
-from .database import get_db
-from .models import Metric, MetricType
+from .database import get_db, init_db
+from .models import Metric, MetricType, Unit, Source
 from .schemas import (
     MetricCreate, MetricBulkCreate, Metric as MetricSchema,
-    MetricType as MetricTypeSchema, MetricTypeCreate
+    MetricType as MetricTypeSchema, MetricTypeCreate,
+    Unit as UnitSchema, UnitCreate,
+    Source as SourceSchema, SourceCreate
 )
 from .config import get_settings
 from .command_relay import router as command_relay_router
@@ -27,6 +28,11 @@ app = FastAPI(
     version="1.0.0",
     debug=settings.DEBUG
 )
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database on startup"""
+    await init_db()
 
 # Setup CORS
 app.add_middleware(
@@ -65,6 +71,73 @@ def format_datetime(value, format='%Y-%m-%d %H:%M:%S'):
 
 templates.env.filters['strftime'] = format_datetime
 
+@app.get("/api/sources", response_model=List[SourceSchema])
+@app.get("/api/sources/", response_model=List[SourceSchema])
+async def list_sources(db: AsyncSession = Depends(get_db)):
+    """List all available sources."""
+    result = await db.execute(select(Source))
+    return result.scalars().all()
+
+@app.post("/api/sources", response_model=SourceSchema)
+@app.post("/api/sources/", response_model=SourceSchema)
+async def create_source(
+    source: SourceCreate,
+    db: AsyncSession = Depends(get_db),
+    api_key: str = Security(get_api_key)
+):
+    """Create a new source."""
+    # Check if source with same name exists
+    result = await db.execute(
+        select(Source).where(Source.name == source.name)
+    )
+    if result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Source with name '{source.name}' already exists"
+        )
+
+    db_source = Source(**source.model_dump())
+    db.add(db_source)
+    await db.commit()
+    await db.refresh(db_source)
+    return db_source
+
+@app.post("/api/units", response_model=UnitSchema)
+async def create_unit(
+    unit: UnitCreate,
+    db: AsyncSession = Depends(get_db),
+    api_key: str = Security(get_api_key)
+):
+    """Create a new unit definition."""
+    # Check if unit with same name or symbol already exists
+    result = await db.execute(
+        select(Unit).where(
+            or_(
+                Unit.name == unit.name,
+                Unit.symbol == unit.symbol
+            )
+        )
+    )
+    existing_unit = result.scalar_one_or_none()
+    if existing_unit:
+        if existing_unit.name == unit.name:
+            detail = f"Unit with name '{unit.name}' already exists"
+        else:
+            detail = f"Unit with symbol '{unit.symbol}' already exists"
+        raise HTTPException(status_code=400, detail=detail)
+
+    db_unit = Unit(**unit.model_dump())
+    db.add(db_unit)
+    await db.commit()
+    await db.refresh(db_unit)
+    return db_unit
+
+@app.get("/api/units", response_model=List[UnitSchema])
+async def list_units(db: AsyncSession = Depends(get_db)):
+    """List all available units."""
+    result = await db.execute(select(Unit))
+    return result.scalars().all()
+
 # Helper function to serialize metric types
 def serialize_metric_types(metric_types):
     """Convert metric types to JSON-serializable dictionaries"""
@@ -73,13 +146,19 @@ def serialize_metric_types(metric_types):
             'id': str(mt.id),
             'name': mt.name,
             'description': mt.description,
-            'unit': mt.unit,
+            'unit': {
+                'id': str(mt.unit.id),
+                'name': mt.unit.name,
+                'symbol': mt.unit.symbol,
+                'description': mt.unit.description
+            } if mt.unit else None,
             'created_at': mt.created_at.isoformat() if mt.created_at else None,
             'is_active': mt.is_active
         }
         for mt in metric_types
     ]
 
+@app.post("/api/metric-types", response_model=MetricTypeSchema)
 @app.post("/api/metric-types/", response_model=MetricTypeSchema)
 async def create_metric_type(
     metric_type: MetricTypeCreate,
@@ -87,42 +166,94 @@ async def create_metric_type(
     api_key: str = Security(get_api_key)
 ):
     """Create a new metric type definition."""
+    # Verify unit exists
+    result = await db.execute(
+        select(Unit).where(Unit.id == metric_type.unit_id)
+    )
+    unit = result.scalar_one_or_none()
+    if not unit:
+        raise HTTPException(status_code=404, detail="Unit not found")
+
     db_metric_type = MetricType(**metric_type.model_dump())
     db.add(db_metric_type)
     await db.commit()
     await db.refresh(db_metric_type)
     return db_metric_type
 
+@app.get("/api/metric-types", response_model=List[MetricTypeSchema])
 @app.get("/api/metric-types/", response_model=List[MetricTypeSchema])
 async def list_metric_types(db: AsyncSession = Depends(get_db)):
     """List all available metric types."""
-    result = await db.execute(select(MetricType))
+    result = await db.execute(
+        select(MetricType).options(selectinload(MetricType.unit))
+    )
     return result.scalars().all()
 
-@app.post("/api/metrics/", response_model=MetricSchema)
+@app.post("/api/metrics", response_model=MetricSchema)
 async def create_metric(
     metric: MetricCreate,
     db: AsyncSession = Depends(get_db),
     api_key: str = Security(get_api_key)
 ):
     """Create a new metric measurement."""
-    # Verify metric type exists
-    result = await db.execute(
-        select(MetricType).where(MetricType.id == metric.metric_type_id)
-    )
-    metric_type = result.scalar_one_or_none()
-    if not metric_type:
-        raise HTTPException(status_code=404, detail="Metric type not found")
+    # If metric_type_name is provided, look up the metric type by name
+    if metric.metric_type_name and not metric.metric_type_id:
+        result = await db.execute(
+            select(MetricType)
+            .options(selectinload(MetricType.unit))
+            .where(MetricType.name == metric.metric_type_name)
+        )
+        metric_type = result.scalar_one_or_none()
+        if not metric_type:
+            raise HTTPException(status_code=404, detail=f"Metric type '{metric.metric_type_name}' not found")
+        metric.metric_type_id = metric_type.id
+    else:
+        # Verify metric type exists by ID
+        result = await db.execute(
+            select(MetricType)
+            .options(selectinload(MetricType.unit))
+            .where(MetricType.id == metric.metric_type_id)
+        )
+        metric_type = result.scalar_one_or_none()
+        if not metric_type:
+            raise HTTPException(status_code=404, detail="Metric type not found")
+
+    # If source_name is provided, look up or create the source
+    if metric.source_name and not metric.source_id:
+        result = await db.execute(
+            select(Source).where(Source.name == metric.source_name)
+        )
+        source = result.scalar_one_or_none()
+        if not source:
+            # Create new source
+            source = Source(name=metric.source_name)
+            db.add(source)
+            await db.commit()
+            await db.refresh(source)
+        metric.source_id = source.id
+    else:
+        # Verify source exists by ID
+        result = await db.execute(
+            select(Source).where(Source.id == metric.source_id)
+        )
+        source = result.scalar_one_or_none()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
 
     # Create the metric
-    db_metric = Metric(**metric.model_dump())
+    metric_data = metric.model_dump(exclude={'metric_type_name', 'source_name'})
+    db_metric = Metric(**metric_data)
     db.add(db_metric)
     await db.commit()
     
-    # Refresh with metric_type relationship loaded
+    # Refresh with all relationships loaded
     result = await db.execute(
         select(Metric)
-        .options(selectinload(Metric.metric_type))
+        .options(
+            selectinload(Metric.metric_type),
+            selectinload(Metric.source),
+            selectinload(Metric.metric_metadata_items)
+        )
         .where(Metric.id == db_metric.id)
     )
     return result.scalar_one()
@@ -147,17 +278,37 @@ async def create_metrics_bulk(
             detail=f"Metric types not found: {missing_types}"
         )
 
+    # Verify all sources exist
+    source_ids = {m.source_id for m in metrics.metrics}
+    result = await db.execute(
+        select(Source).where(Source.id.in_(source_ids))
+    )
+    found_sources = {s.id for s in result.scalars().all()}
+    missing_sources = source_ids - found_sources
+    if missing_sources:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sources not found: {missing_sources}"
+        )
+
     db_metrics = [Metric(**m.model_dump()) for m in metrics.metrics]
     db.add_all(db_metrics)
     await db.commit()
     
-    # Refresh all metrics to get their IDs
-    for metric in db_metrics:
-        await db.refresh(metric)
-    
-    return db_metrics
+    # Get all metrics with relationships loaded
+    metric_ids = [m.id for m in db_metrics]
+    result = await db.execute(
+        select(Metric)
+        .options(
+            selectinload(Metric.metric_type),
+            selectinload(Metric.source),
+            selectinload(Metric.metric_metadata_items)
+        )
+        .where(Metric.id.in_(metric_ids))
+    )
+    return result.scalars().all()
 
-@app.get("/api/metrics/", response_model=List[MetricSchema])
+@app.get("/api/metrics", response_model=List[MetricSchema])
 async def get_metrics(db: AsyncSession = Depends(get_db)):
     """
     Retrieve all metrics.
@@ -190,9 +341,10 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     Main dashboard view.
     Renders the dashboard template with metric types and their history.
     """
-    # Get all metric types
+    # Get all metric types with their units
     result = await db.execute(
         select(MetricType)
+        .options(selectinload(MetricType.unit))
         .order_by(MetricType.name)
     )
     metric_types = result.scalars().all()
@@ -255,9 +407,10 @@ async def advanced_dashboard(request: Request, db: AsyncSession = Depends(get_db
     Advanced dashboard view with speedometer gauge and filterable table.
     Renders the advanced_dashboard template with metric types and their history.
     """
-    # Get all metric types
+    # Get all metric types with their units
     result = await db.execute(
         select(MetricType)
+        .options(selectinload(MetricType.unit))
         .order_by(MetricType.name)
     )
     metric_types = result.scalars().all()

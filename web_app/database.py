@@ -3,6 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from functools import lru_cache
 
 from .config import get_settings
+from .models import Base
 
 settings = get_settings()
 
@@ -15,8 +16,15 @@ def get_engine():
     """
     return create_async_engine(
         settings.DATABASE_URL,
-        echo=settings.DEBUG,
+        echo=settings.SQL_ECHO,
     )
+
+# Initialize database tables
+async def init_db():
+    """Initialize database tables if they don't exist."""
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 # Create async session factory
 @lru_cache()

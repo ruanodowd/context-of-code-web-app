@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./metrics.db"
+    SQL_ECHO: bool = False  # Control SQL statement logging
     
     # Application
     APP_HOST: str = "127.0.0.1"

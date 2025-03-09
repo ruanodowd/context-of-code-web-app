@@ -1,13 +1,41 @@
 from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 from uuid import UUID
+
+
+class UnitBase(BaseModel):
+    """Base schema for units."""
+    name: str = Field(..., description="Name of the unit (e.g., 'Percentage', 'Megabytes')")
+    symbol: str = Field(..., description="Symbol or abbreviation (e.g., '%', 'MB')")
+    description: Optional[str] = Field(None, description="Optional description of the unit")
+
+    @field_validator('name', 'symbol')
+    @classmethod
+    def validate_fields(cls, v: str) -> str:
+        if not v or len(v.strip()) == 0:
+            raise ValueError("Field cannot be empty")
+        return v.strip()
+
+
+class UnitCreate(UnitBase):
+    """Schema for creating a new unit."""
+    pass
+
+
+class Unit(UnitBase):
+    """Schema for reading a unit."""
+    id: UUID
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 class MetricTypeBase(BaseModel):
     """Base schema for metric types."""
     name: str = Field(..., description="Unique identifier for the metric type")
     description: Optional[str] = Field(None, description="Detailed description of what this metric represents")
-    unit: Optional[str] = Field(None, description="Unit of measurement (e.g., '%', 'MB', 'requests/sec')")
+    unit_id: UUID = Field(..., description="ID of the unit of measurement")
     is_active: bool = Field(True, description="Whether this metric type is currently active")
     
     @field_validator('name')
@@ -25,6 +53,7 @@ class MetricType(MetricTypeBase):
     """Schema for reading a metric type."""
     id: UUID
     created_at: datetime
+    unit: Unit
 
     class Config:
         from_attributes = True
@@ -93,11 +122,25 @@ class Metadata(MetadataCreate):
 
 class MetricCreate(BaseModel):
     """Schema for creating a new metric."""
-    metric_type_id: UUID = Field(..., description="ID of the metric type")
-    source_id: UUID = Field(..., description="ID of the source")
+    metric_type_id: Optional[UUID] = Field(None, description="ID of the metric type")
+    metric_type_name: Optional[str] = Field(None, description="Name of the metric type")
+    source_id: Optional[UUID] = Field(None, description="ID of the source")
+    source_name: Optional[str] = Field(None, description="Name of the source")
     value: float = Field(..., description="Numerical value of the metric")
     recorded_at: Optional[datetime] = Field(None, description="When the metric was recorded")
     metadata: Optional[List[MetadataCreate]] = Field(default_factory=list, description="Additional metadata associated with the measurement")
+    
+    @model_validator(mode='after')
+    def validate_metric_type_and_source(self) -> 'MetricCreate':
+        if not self.metric_type_id and not self.metric_type_name:
+            raise ValueError("Either metric_type_id or metric_type_name must be provided")
+        if self.metric_type_id and self.metric_type_name:
+            raise ValueError("Only one of metric_type_id or metric_type_name should be provided")
+        if not self.source_id and not self.source_name:
+            raise ValueError("Either source_id or source_name must be provided")
+        if self.source_id and self.source_name:
+            raise ValueError("Only one of source_id or source_name should be provided")
+        return self
     
     @field_validator('value')
     @classmethod
